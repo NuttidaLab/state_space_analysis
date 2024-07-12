@@ -15,7 +15,7 @@ def shift(arr, num, fill_value=np.nan):
         result[:] = arr
     return result
 
-def validate_data(n_subjects, n_sessions, n_runs, n_trials, n_ts, exp_ts, jx, jy, tgonset, noise_thresh, noise_gap):
+def validate_data(n_subjects, n_sessions, n_runs, n_trials, n_ts, exp_ts, jx, jy, tgonset, noise_thresh, noise_gap, do_noise_thresh = True):
     ''' Removes 'too early' trials and returns the response angle for each trial 
     
     Logic for Getting Valid Trials:
@@ -59,15 +59,17 @@ def validate_data(n_subjects, n_sessions, n_runs, n_trials, n_ts, exp_ts, jx, jy
     resp_angle = resp_angle.reshape(n_subjects, n_sessions, n_runs, n_trials, exp_ts)
 
 
-    # Make responses nan if distance from center is > noise_thresh
+    if do_noise_thresh:
+        # Make responses nan if distance from center is > noise_thresh
+        
+        for sub in range(n_subjects):
+            for sess in range(n_sessions):
+                for run in range(n_runs):
+                    for trial in range(n_trials):
+                        # if the distance from center is >0.4 duing first targetonset - 30 frames, disregard respose angle
+                        if np.any(dist_from_cent[sub, sess, run, trial, :250-noise_gap] > noise_thresh):
+                            resp_angle[sub, sess, run, trial, :] = np.nan
 
-    for sub in range(n_subjects):
-        for sess in range(n_sessions):
-            for run in range(n_runs):
-                for trial in range(n_trials):
-                    # if the distance from center is >0.4 duing first targetonset - 30 frames, disregard respose angle
-                    if np.any(dist_from_cent[sub, sess, run, trial, :250-noise_gap] > noise_thresh):
-                        resp_angle[sub, sess, run, trial, :] = np.nan
 
 
     # Maintain last valid response angle if distance from center is > 1
