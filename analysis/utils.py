@@ -96,6 +96,9 @@ def validate_data(n_subjects, n_sessions, n_runs, n_trials, n_ts, exp_ts, jx, jy
     final_resp_angles = np.ndarray(shape=(n_subjects, n_sessions, n_runs, n_trials))
     final_resp_angles[:] = np.nan
 
+    final_resp_idx = np.ndarray(shape=(n_subjects, n_sessions, n_runs, n_trials))
+    final_resp_idx[:] = np.nan
+
     for sub in range(n_subjects):
         for sess in range(n_sessions):
             for run in range(n_runs):
@@ -107,6 +110,7 @@ def validate_data(n_subjects, n_sessions, n_runs, n_trials, n_ts, exp_ts, jx, jy
                     #   or it will be the largest spike after onset
                     
                     resp_idx = np.argmax(dist_from_cent[sub, sess, run, trial, 250:])
+                    final_resp_idx[sub, sess, run, trial] = 250 + resp_idx
                     final_resp_angles[sub, sess, run, trial] = resp_angle[sub, sess, run, trial, 250 + resp_idx]
 
-    return shifted_jx, shifted_jy, dist_from_cent, resp_angle, final_resp_angles
+    return shifted_jx, shifted_jy, dist_from_cent, resp_angle, final_resp_angles, final_resp_idx.astype(int)
