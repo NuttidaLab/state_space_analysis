@@ -3,9 +3,9 @@ axej/*
 axej_eeg_calibrations/*
 ssm/*
 
-dynamax_rudra/*
-dynamax/*
-analysis/dynamax/*
+# dynamax_rudra/*
+# dynamax/*
+# analysis/dynamax/*
 *.pyc
 
-analysis/dynamax_backup/*
+# analysis/dynamax_backup/*
