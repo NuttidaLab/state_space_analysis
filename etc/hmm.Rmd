@@ -1,0 +1,391 @@
+---
+title: "hmm"
+output: html_document
+date: "2024-10-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(cmdstanr)
+library(bayesplot)
+require(reticulate)
+install.packages("gtools")
+library(gtools)
+```
+
+```{r}
+source_python("pickle_testing.py")
+pickle_data <- read_pickle("ICLR_synth_data_1.pkl")
+```
+
+```{r}
+emissions <- pickle_data$emissions
+inputs <- pickle_data$input
+```
+
+```{r}
+vari <- inputs[,,1]
+ones <- inputs[,,2]
+```
+
+```{r}
+dim(emissions) <- c(10000, 20)
+emissions <- as.matrix(emissions)
+```
+
+```{r}
+cmdstanr::install_cmdstan()
+```
+
+```{r}
+cmdstanr::cmdstan_path()
+```
+
+```{r}
+model_code <- "
+data {
+  int<lower=0> N;
+  vector[N] y;
+}
+parameters {
+  real mu;
+  real<lower=0> sigma;
+}
+model {
+  y ~ normal(mu, sigma);
+}"
+
+writeLines(model_code, "simple_model.stan")
+
+mod <- cmdstan_model("simple_model.stan")
+
+set.seed(123)
+N <- 100
+y <- rnorm(N, mean = 0, sd = 1)
+
+data_list <- list(N = N, y = y)
+
+fit <- mod$sample(
+  data = data_list,
+  seed = 123,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 500,
+  iter_sampling = 1000
+)
+
+fit$summary()
+
+posterior <- fit$draws()
+
+bayesplot::mcmc_hist(posterior, pars = "mu")
+```
+
+
+```{r}
+input_hmm_code <- "
+data {
+  int<lower=1> K;                   // num categories (states)
+  int<lower=1> V;                   // num observed outputs
+  int<lower=0> T;                   // sequence length
+  array[T] int<lower=1, upper=V> w; // observed outputs
+  matrix[T, P] X_trans;             // covariates for transitions (T x P)
+  matrix[T, Q] X_emit;              // covariates for emissions (T x Q)
+  vector<lower=0>[K] alpha;         // Dirichlet prior for transitions
+  vector<lower=0>[V] beta;          // Dirichlet prior for emissions
+}
+parameters {
+  matrix[K, P] beta_trans;          // regression coefficients for transitions
+  matrix[K, Q] beta_emit;           // regression coefficients for emissions
+  array[K] simplex[K] theta;        // transition probabilities (base)
+  array[K] simplex[V] phi;          // emission probabilities (base)
+}
+model {
+  // Priors
+  for (k in 1:K) {
+    beta_trans[k] ~ normal(0, 1);
+    beta_emit[k] ~ normal(0, 1);
+  }
+
+  // Transition probabilities based on covariates
+  for (t in 2:T) {
+    vector[K] logits[K];
+    for (k in 1:K) {
+      logits[k] = X_trans[t] * beta_trans[k]; // linear predictors for transition
+    }
+    for (k in 1:K) {
+      theta[k] = softmax(logits[k]); // transition probabilities after softmax
+    }
+  }
+
+  // Emission probabilities based on covariates
+  for (t in 1:T) {
+    vector[V] emit_logit;
+    for (k in 1:K) {
+      emit_logit = X_emit[t] * beta_emit[k]; // linear predictor for emissions
+    }
+    phi[k] = softmax(emit_logit); // emission probabilities after softmax
+  }
+
+  // Observed data model with GLM transition and emission probabilities
+  for (t in 1:T) {
+    w[t] ~ categorical(phi[z[t]]); // emission probabilities
+  }
+  for (t in 2:T) {
+    z[t] ~ categorical(theta[z[t - 1]]); // transition probabilities
+  }
+}"
+```
+
+
+```{r}
+set.seed(42)
+
+generate_hmm_data <- function(K, V, T, alpha, beta) {
+  # Generate transition probabilities (theta) and emission probabilities (phi)
+  theta <- matrix(NA, K, K)
+  for (k in 1:K) {
+    theta[k, ] <- as.vector(rdirichlet(1, alpha))  # Transition probs from state k
+  }
+  
+  phi <- matrix(NA, K, V)
+  for (k in 1:K) {
+    phi[k, ] <- as.vector(rdirichlet(1, beta))  # Emission probs for state k
+  }
+  
+  # Initialize sequences
+  z <- integer(T)  # Latent states
+  w <- integer(T)  # Observed outputs
+
+  # Sample initial state
+  z[1] <- sample(1:K, 1)
+  w[1] <- sample(1:V, 1, prob = phi[z[1], ])
+  
+  # Generate sequence
+  for (t in 2:T) {
+    # Transition based on previous state
+    z[t] <- sample(1:K, 1, prob = theta[z[t - 1], ])
+    
+    # Emit observed output based on current state
+    w[t] <- sample(1:V, 1, prob = phi[z[t], ])
+  }
+
+  list(K = K, V = V, T = T, w = w, z = z, alpha = alpha, beta = beta)
+}
+
+# Example Parameters
+K <- 3                # Number of hidden states
+V <- 5                # Number of unique words
+T <- 100              # Length of the sequence
+alpha <- rep(1, K)    # Dirichlet prior for transitions
+beta <- rep(1, V)     # Dirichlet prior for emissions
+
+# Generate synthetic data
+hmm_data <- generate_hmm_data(K, V, T, alpha, beta)
+
+hmm_code <- "
+data {
+  int<lower=1> K;             // num categories
+  int<lower=1> V;             // num words
+  int<lower=0> T;             // num instances
+  array[T] int<lower=1, upper=V> w;  // words
+  array[T] int<lower=1, upper=K> z;  // categories
+  vector<lower=0>[K] alpha;   // transit prior
+  vector<lower=0>[V] beta;    // emit prior
+}
+parameters {
+  array[K] simplex[K] theta;        // transit probs
+  array[K] simplex[V] phi;          // emit probs
+}
+model {
+  for (k in 1:K) {
+    theta[k] ~ dirichlet(alpha);
+  }
+  for (k in 1:K) {
+    phi[k] ~ dirichlet(beta);
+  }
+  for (t in 1:T) {
+    w[t] ~ categorical(phi[z[t]]);
+  }
+  for (t in 2:T) {
+    z[t] ~ categorical(theta[z[t - 1]]);
+  }
+}"
+
+write(hmm_code, "simple_hmm.stan")
+
+mod <- cmdstan_model("simple_hmm.stan")
+
+set.seed(123)
+
+hmm_data_list <- list(
+  K = hmm_data$K,
+  V = hmm_data$V,
+  T = hmm_data$T,
+  w = hmm_data$w,
+  z = hmm_data$z,
+  alpha = hmm_data$alpha,
+  beta = hmm_data$beta
+)
+
+fit <- mod$sample(
+  data = hmm_data_list,
+  seed = 42,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 500,
+  iter_sampling = 1000
+)
+
+fit$summary()
+
+theta_posterior <- fit$draws("theta")
+bayesplot::mcmc_areas(as.array(theta_posterior), regex_pars = "theta\\[")
+
+phi_posterior <- fit$draws("phi")
+bayesplot::mcmc_areas(as.array(phi_posterior), regex_pars = "phi\\[")
+```
+
+```{r}
+library(gtools)  # For rdirichlet function
+
+set.seed(42)
+
+generate_hmm_data <- function(K, V, T, alpha, beta) {
+  # Generate transition probabilities (theta) and coefficients for emissions (phi_coeffs)
+  theta <- matrix(NA, K, K)
+  for (k in 1:K) {
+    theta[k, ] <- as.vector(rdirichlet(1, alpha))  # Transition probs from state k
+  }
+  
+  # Emission coefficients (phi_coeffs): one intercept + two features per state
+  phi_coeffs <- array(rnorm(K * V * 3), dim = c(K, V, 3))
+  
+  # Generate feature matrix (two features) for each time step
+  X <- matrix(rnorm(T * 2), nrow = T, ncol = 2)
+  
+  # Initialize sequences
+  z <- integer(T)  # Latent states
+  w <- integer(T)  # Observed outputs
+
+  # Sample initial state
+  z[1] <- sample(1:K, 1)
+  
+  # Function to compute softmax
+  softmax <- function(x) exp(x) / sum(exp(x))
+  
+  # Generate sequence
+  for (t in 1:T) {
+    # Compute emission probabilities based on the linear model
+    linear_pred <- phi_coeffs[z[t], , 1] + X[t, 1] * phi_coeffs[z[t], , 2] + X[t, 2] * phi_coeffs[z[t], , 3]
+    phi <- softmax(linear_pred)
+    
+    # Emit observed output based on current state
+    w[t] <- sample(1:V, 1, prob = phi)
+    
+    # Transition to the next state if not the last time step
+    if (t < T) {
+      z[t + 1] <- sample(1:K, 1, prob = theta[z[t], ])
+    }
+  }
+
+  list(K = K, V = V, T = T, w = w, z = z, X = X, alpha = alpha, beta = beta, phi_coeffs = phi_coeffs)
+}
+
+# Example Parameters
+K <- 3                # Number of hidden states
+V <- 5                # Number of unique words
+T <- 100              # Length of the sequence
+alpha <- rep(1, K)    # Dirichlet prior for transitions
+beta <- rep(1, V)     # Dirichlet prior for emissions
+
+# Generate synthetic data with input-driven emissions
+hmm_data <- generate_hmm_data(K, V, T, alpha, beta)
+
+# Define the Stan model code
+hmm_code <- "
+data {
+  int<lower=1> K;                // num categories
+  int<lower=1> V;                // num words
+  int<lower=0> T;                // num instances
+  array[T] int<lower=1, upper=V> w;  // words
+  array[T] int<lower=1, upper=K> z;  // categories
+  vector<lower=0>[K] alpha;      // transit prior
+  vector<lower=0>[V] beta;       // emit prior
+  matrix[T, 2] X;                // features for emissions (two features)
+}
+parameters {
+  array[K] simplex[K] theta;              // transit probs
+  array[K] matrix[V, 3] phi_coeffs;       // emission coefficients (intercept + 2 features) for each state
+}
+model {
+  // Transition priors
+  for (k in 1:K) {
+    theta[k] ~ dirichlet(alpha);
+  }
+  
+  // Emission coefficient priors
+  for (k in 1:K) {
+    for (v in 1:V) {
+      phi_coeffs[k, v] ~ normal(0, 1);
+    }
+  }
+  
+  // Observed data model with input-driven emissions
+  for (t in 1:T) {
+    // Compute emission probabilities with softmax transformation
+    vector[V] emit_probs;
+    for (v in 1:V) {
+      emit_probs[v] = phi_coeffs[z[t], v, 1] + X[t, 1] * phi_coeffs[z[t], v, 2] + X[t, 2] * phi_coeffs[z[t], v, 3];
+    }
+    emit_probs = softmax(emit_probs);
+    w[t] ~ categorical(emit_probs);
+  }
+  
+  // State transition model
+  for (t in 2:T) {
+    z[t] ~ categorical(theta[z[t - 1]]);
+  }
+}"
+
+writeLines(hmm_code, "simple_hmm.stan")
+
+mod <- cmdstan_model("simple_hmm.stan")
+
+hmm_data_list <- list(
+  K = hmm_data$K,
+  V = hmm_data$V,
+  T = hmm_data$T,
+  w = hmm_data$w,
+  z = hmm_data$z,
+  alpha = hmm_data$alpha,
+  beta = hmm_data$beta,
+  X = hmm_data$X
+)
+
+fit <- mod$sample(
+  data = hmm_data_list,
+  seed = 42,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 500,
+  iter_sampling = 1000
+)
+
+fit$summary()
+
+theta_posterior <- fit$draws("theta")
+bayesplot::mcmc_areas(as.array(theta_posterior), regex_pars = "theta\\[")
+
+# Plot emission coefficients
+phi_coeffs_posterior <- fit$draws("phi_coeffs")
+bayesplot::mcmc_areas(as.array(phi_coeffs_posterior), regex_pars = "phi_coeffs\\[")
+```
+
+```{r}
+phi_coeffs
+```
+
