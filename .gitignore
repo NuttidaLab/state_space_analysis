@@ -9,4 +9,6 @@ ssm/*
 # analysis/dynamax/*
 *.pyc
 
+*.o
+
 # analysis/dynamax_backup/*
