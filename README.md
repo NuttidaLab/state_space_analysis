@@ -1,17 +1,3 @@
-# State Space Analysis
+# Independent and Combined Effects of Expectation, Attention, and Stimulus Strength on Probabilistic Decision-Making
 
-Contains all the SSM and RSA of decoding project
-
-## Installation
-
-Python: `3.11`
-
-```
-pip install -r requirements.txt
-```
-
-If running on *nix systems and within a conda environment (for pygame):
-
-```
-conda install -c conda-forge libstdcxx-ng
-```
+`Keywords: State-Space Models, Decision Making, Probabilistic Machine Learning.`

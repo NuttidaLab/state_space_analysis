@@ -1,14 +1,3 @@
 axej_eeg/*
-data_inspection/axej_eeg/*
-axej/*
-axej_eeg_calibrations/*
-ssm/*
-
-# dynamax_rudra/*
-# dynamax/*
-# analysis/dynamax/*
 *.pyc
-
 *.o
-
-# analysis/dynamax_backup/*
