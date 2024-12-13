@@ -1,3 +1,4 @@
 axej_eeg/*
 *.pyc
 *.o
+cache/*

@@ -18,6 +18,9 @@ noise_gap = 30
 
 experiment_orientations = [159, 123, 87, 51, 15]
 subject_names = ["01", "02", "03", "04", "05", "06", "07", "08" ,"09", "10", "11", "12", "14"]
+median_key = {15:0, 51:1, 87:2, 123:3, 159:4}
+std_key = {15:0, 51:1, 87:2, 123:3, 159:4}
+
 
 def get_calib(subj, sess, run=None):
     mat_contents = loadmat(data_path + f'AxeJEEG_Subj{subject_names[subj]}_S{sess+1}_Cali1.mat.mat', struct_as_record=False, squeeze_me=True)
@@ -126,16 +129,14 @@ def package_calib_data(do_clip = True, do_noise_thresh = True):
         for i, unique_stim in enumerate(np.unique(stimdir)):
             circ_median[sub, i] = circmedian(stim_resp[sub, i])
             circ_std[sub, i] = np.rad2deg(circstd(np.deg2rad(stim_resp[sub, i]), nan_policy='omit'))
-
+    
+    if not do_clip:
+        circ_median[11,0] = circ_median[11,0] - 360
     return calib_df, circ_median, circ_std, (shifted_jx, shifted_jy, dist_from_cent, resp_angle)
 
 def calc_acc(calib_median, calib_std, final_resp_angles, stimdir):
 
     n_subjects, n_sessions, n_runs, n_trials = final_resp_angles.shape[:4]
-
-    median_key = {15:0, 51:1, 87:2, 123:3, 159:4}
-    std_key = {15:0, 51:1, 87:2, 123:3, 159:4}
-
     # One and two sigma distance from the calibration median
 
     resp_correct_sigma = np.zeros_like(final_resp_angles)
@@ -209,7 +210,7 @@ def package_run_data(median, std, do_clip = True, do_noise_thresh = True):
     
     shifted_jx, shifted_jy, dist_from_cent, resp_angle, final_resp_angles, final_resp_idx, attention, coherence, stimdir, tgonset = load_and_validate_data(which="run", do_noise_thresh=do_noise_thresh)
 
-    n_subjects, n_sessions, n_runs, n_trials = shifted_jx.shape[:4]
+    n_subjects, n_sessions, n_runs, n_trials, n_ts = shifted_jx.shape
 
     # Do clipping
     if do_clip:
@@ -244,5 +245,20 @@ def package_run_data(median, std, do_clip = True, do_noise_thresh = True):
     # if resp > than t_calib then "higher" else "lower"
     resp_df["dir"] = np.where(resp_df["resp"] > resp_df["t_calib"], "higher", "lower")
 
-    return resp_df, (shifted_jx, shifted_jy, dist_from_cent, resp_angle)
+    calib_error_angle = np.zeros_like(resp_angle)
+    calib_error_angle[:] = np.nan
+
+    for sub in range(n_subjects):
+        for sess in range(n_sessions):
+            for run in range(n_runs):
+                for trial in range(n_trials):
+                    t = stimdir[sub,sess,run,trial]
+                    a = median[sub,median_key[t]]
+                    for ts in range(n_ts):
+                        b = resp_angle[sub,sess,run,trial,ts]
+                        if np.isnan(resp_angle[sub,sess,run,trial,ts]):continue
+                        calib_error_angle[sub,sess,run,trial,ts] = circdist(a,b)
+
+
+    return resp_df, (shifted_jx, shifted_jy, dist_from_cent, resp_angle, calib_error_angle)
 
