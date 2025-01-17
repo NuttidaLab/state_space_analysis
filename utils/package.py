@@ -17,7 +17,7 @@ noise_thresh = 0.5
 noise_gap = 30
 
 experiment_orientations = [159, 123, 87, 51, 15]
-subject_names = ["01", "02", "03", "04", "05", "06", "07", "08" ,"09", "10", "11", "12", "14"]
+subject_names = ["01", "02", "03", "04", "05", "06", "07" ,"09", "10", "11", "12", "14"]
 median_key = {15:0, 51:1, 87:2, 123:3, 159:4}
 std_key = {15:0, 51:1, 87:2, 123:3, 159:4}
 
@@ -31,7 +31,7 @@ def get_run(subj, sess, run):
     return mat_contents["p"].__dict__
 
 def load_and_validate_data(which="run", do_noise_thresh=True):
-    n_subjects = 13
+    n_subjects = len(subject_names)
     n_sessions = 4
     # n_runs = 1
     n_trials = 120
@@ -130,8 +130,8 @@ def package_calib_data(do_clip = True, do_noise_thresh = True):
             circ_median[sub, i] = circmedian(stim_resp[sub, i])
             circ_std[sub, i] = np.rad2deg(circstd(np.deg2rad(stim_resp[sub, i]), nan_policy='omit'))
     
-    if not do_clip:
-        circ_median[11,0] = circ_median[11,0] - 360
+    # if not do_clip:
+    #     circ_median[11,0] = circ_median[11,0] - 360
     return calib_df, circ_median, circ_std, (shifted_jx, shifted_jy, dist_from_cent, resp_angle)
 
 def calc_acc(calib_median, calib_std, final_resp_angles, stimdir):
