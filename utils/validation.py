@@ -15,7 +15,7 @@ def shift(arr, num, fill_value=np.nan):
         result[:] = arr
     return result
 
-def validate(exp_ts, jx, jy, tgonset, noise_thresh, noise_gap, do_noise_thresh = True):
+def validate(exp_ts, jx, jy, tgonset, noise_thresh, noise_gap, do_noise_thresh = False, drag_last_valid = False):
     ''' Removes 'too early' trials and returns the response angle for each trial 
     
     Logic for Getting Valid Trials:
@@ -75,22 +75,25 @@ def validate(exp_ts, jx, jy, tgonset, noise_thresh, noise_gap, do_noise_thresh =
 
     # Maintain last valid response angle if distance from center is > 1
 
-    for sub in range(n_subjects):
-        for sess in range(n_sessions):
-            for run in range(n_runs):
-                for trial in range(n_trials):
-                    last_valid_angle = np.nan
-                    for ts in range(exp_ts):
-                        
-                        # if distance is > 1, set that response angle to last valid response angle
-                        # else if distance is < 1, set last valid response angle to current response angle
+    if drag_last_valid:
+        for sub in range(n_subjects):
+            for sess in range(n_sessions):
+                for run in range(n_runs):
+                    for trial in range(n_trials):
+                        last_valid_angle = 90
+                        # last_valid_angle = np.nan
+                        for ts in range(exp_ts):
+                            
+                            # if distance is > 1, set that response angle to last valid response angle
+                            # else if distance is < 1, set last valid response angle to current response angle
 
-                        if dist_from_cent[sub, sess, run, trial, ts] > 1:
-                            dist_from_cent[sub, sess, run, trial, ts] = 1
-                            resp_angle[sub, sess, run, trial, ts] = last_valid_angle
-                        else:
-                            last_valid_angle = resp_angle[sub, sess, run, trial, ts]
+                            if dist_from_cent[sub, sess, run, trial, ts] > 1:
+                                resp_angle[sub, sess, run, trial, ts] = last_valid_angle
+                            else:
+                                last_valid_angle = resp_angle[sub, sess, run, trial, ts]
 
+    # Clip the distance from center to 1 if it is > 1
+    dist_from_cent[dist_from_cent > 1] = 1
 
     # Response of the trial
 
