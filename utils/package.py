@@ -132,7 +132,7 @@ def package_calib_data(do_clip = True, do_noise_thresh = True):
     
     # if not do_clip:
     #     circ_median[11,0] = circ_median[11,0] - 360
-    return calib_df, circ_median, circ_std, (shifted_jx, shifted_jy, dist_from_cent, resp_angle)
+    return calib_df, circ_median, circ_std, np.array([shifted_jx, shifted_jy, dist_from_cent, resp_angle])
 
 def calc_acc(calib_median, calib_std, final_resp_angles, stimdir):
 
@@ -260,5 +260,5 @@ def package_run_data(median, std, do_clip = True, do_noise_thresh = True):
                         calib_error_angle[sub,sess,run,trial,ts] = circdist(a,b)
 
 
-    return resp_df, (shifted_jx, shifted_jy, dist_from_cent, resp_angle, calib_error_angle)
+    return resp_df, np.array([shifted_jx, shifted_jy, dist_from_cent, resp_angle, calib_error_angle])
 
