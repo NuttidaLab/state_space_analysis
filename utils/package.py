@@ -8,6 +8,8 @@ import itertools
 from .validation import validate
 from .circular_math import circdist, circmedian
 
+from .cleanup import discretize_nearly_static_segments
+
 data_path = 'axej_eeg/'
 
 exp_ts = 1000
@@ -244,6 +246,15 @@ def package_run_data(median, std, do_clip = True, do_noise_thresh = True):
 
     # if resp > than t_calib then "higher" else "lower"
     resp_df["dir"] = np.where(resp_df["resp"] > resp_df["t_calib"], "higher", "lower")
+    
+    # Making it easier to use
+    resp_df.loc[resp_df["coh"] == -1, "coh"] = "low"
+    resp_df.loc[resp_df["coh"] == 1, "coh"] = "high"
+    resp_df.loc[resp_df["att"] == 1, "att"] = "focused"
+    resp_df.loc[resp_df["att"] == -1, "att"] = "divided"
+    resp_df.loc[resp_df["exp_al"] == 1, "exp_al"] = "expected"
+    resp_df.loc[resp_df["exp_al"] == 0, "exp_al"] = "unexpected"
+    resp_df["subj"] += 1
 
     calib_error_angle = np.zeros_like(resp_angle)
     calib_error_angle[:] = np.nan
@@ -259,6 +270,11 @@ def package_run_data(median, std, do_clip = True, do_noise_thresh = True):
                         if np.isnan(resp_angle[sub,sess,run,trial,ts]):continue
                         calib_error_angle[sub,sess,run,trial,ts] = circdist(a,b)
 
+    ds = dist_from_cent.copy()
+    ds[np.isnan(ds)] = 0
+    clean_ds, clean_ds_mask = discretize_nearly_static_segments(ds.reshape(-1, 1000), movement_threshold=0.01, min_length=10, floor_threshold=0.4)
+    clean_err = calib_error_angle.copy().reshape(-1, 1000)
+    clean_err[clean_ds_mask] = np.nan
 
-    return resp_df, np.array([shifted_jx, shifted_jy, dist_from_cent, resp_angle, calib_error_angle])
+    return resp_df, np.array([shifted_jx, shifted_jy, dist_from_cent, resp_angle, calib_error_angle, clean_ds.reshape(12, 4, 6, 120, 1000), clean_err.reshape(12, 4, 6, 120, 1000)])
 

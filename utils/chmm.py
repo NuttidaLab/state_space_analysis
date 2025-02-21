@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 import jax.random as jr
 from jax import vmap
+import optax
 from jaxtyping import Float, Array
 from dynamax.hidden_markov_model.models.abstractions import HMM, HMMEmissions, HMMParameterSet, HMMPropertySet
 from dynamax.hidden_markov_model.models.initial import StandardHMMInitialState, ParamsStandardHMMInitialState
@@ -44,7 +45,10 @@ class CircularRegressionHMMEmissions(HMMEmissions):
     def __init__(self,
                  num_states,
                  input_dim,
-                 emission_dim):
+                 emission_dim,
+                 m_step_optimizer=optax.adam(1e-3),
+                 m_step_num_iters=50):
+        super().__init__(m_step_optimizer=m_step_optimizer, m_step_num_iters=m_step_num_iters)
         self.num_states = num_states
         self.input_dim = input_dim
         self.emission_dim = emission_dim
@@ -71,7 +75,6 @@ class CircularRegressionHMMEmissions(HMMEmissions):
             _emission_covs = jnp.tile(jnp.eye(self.emission_dim)[None, :, :], (self.num_states, 1, 1))
 
         elif method.lower() == "prior":
-
             key1, key2, key = jr.split(key, 3)
             _emission_weights = 0.01 * jr.normal(key1, (self.num_states, self.emission_dim, self.input_dim))
             _emission_biases = jnp.radians(jr.normal(key2, (self.num_states, self.emission_dim)))
