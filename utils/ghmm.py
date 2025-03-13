@@ -1,15 +1,19 @@
+"""Gaussian Hidden Markov Models with various constraints on the covariance matrix."""
+from typing import Any, Dict, NamedTuple, Optional, Tuple, Union
+from jax import vmap
 import jax.numpy as jnp
 import jax.random as jr
 import tensorflow_probability.substrates.jax.bijectors as tfb
 import tensorflow_probability.substrates.jax.distributions as tfd
-from jax import vmap
 from jaxtyping import Float, Array
 import optax
+
 from dynamax.parameters import ParameterProperties
+from dynamax.hidden_markov_model.inference import HMMPosterior
 from dynamax.hidden_markov_model.models.abstractions import HMM, HMMEmissions, HMMParameterSet, HMMPropertySet
 from dynamax.hidden_markov_model.models.initial import StandardHMMInitialState, ParamsStandardHMMInitialState
 from dynamax.hidden_markov_model.models.transitions import StandardHMMTransitions, ParamsStandardHMMTransitions
-from dynamax.types import Scalar
+from dynamax.types import IntScalar, Scalar
 from dynamax.utils.distributions import InverseWishart
 from dynamax.utils.distributions import NormalInverseGamma
 from dynamax.utils.distributions import NormalInverseWishart
@@ -17,35 +21,32 @@ from dynamax.utils.distributions import nig_posterior_update
 from dynamax.utils.distributions import niw_posterior_update
 from dynamax.utils.bijectors import RealToPSDBijector
 from dynamax.utils.utils import pytree_sum
-from typing import NamedTuple, Optional, Tuple, Union
 
 
 class ParamsGaussianHMMEmissions(NamedTuple):
+    """Parameters for Gaussian emissions in an HMM."""
     means: Union[Float[Array, "state_dim emission_dim"], ParameterProperties]
     covs: Union[Float[Array, "state_dim emission_dim emission_dim"], ParameterProperties]
 
 
 class GaussianHMMEmissions(HMMEmissions):
+    """Gaussian emissions for an HMM.
 
+    Args:
+        num_states: number of discrete states
+        emission_dim: dimension of the emission vector
+        emission_prior_mean: prior mean for emissions
+        emission_prior_concentration: concentration parameter for the normal inverse Wishart prior
+        emission_prior_scale: scale matrix for the normal inverse Wishart  prior
+        emission_prior_extra_df: extra degrees of freedom for the normal inverse Wishart prior
+    """
     def __init__(self,
-                 num_states,
-                 emission_dim,
-                 emission_prior_mean=0.0,
-                 emission_prior_concentration=1e-4,
-                 emission_prior_scale=1e-4,
-                 emission_prior_extra_df=0.1,
-                 m_step_optimizer=optax.adam(1e-3),
-                 m_step_num_iters=50
-                 ):
-        """_summary_
-
-        Args:
-            initial_probabilities (_type_): _description_
-            transition_matrix (_type_): _description_
-            emission_means (_type_): _description_
-            emission_covariance_matrices (_type_): _description_
-        """
-        super().__init__(m_step_optimizer=m_step_optimizer, m_step_num_iters=m_step_num_iters)
+                 num_states: int,
+                 emission_dim: int,
+                 emission_prior_mean: Union[Scalar, Float[Array, " emission_dim"]] = 0.0,
+                 emission_prior_concentration: Scalar = 1e-4,
+                 emission_prior_scale: Union[Scalar, Float[Array, "emission_dim emission_dim"]] = 1e-4,
+                 emission_prior_extra_df: Scalar = 0.1):
         self.num_states = num_states
         self.emission_dim = emission_dim
         self.emission_prior_mean = emission_prior_mean * jnp.ones(emission_dim)
@@ -55,23 +56,48 @@ class GaussianHMMEmissions(HMMEmissions):
         self.emission_prior_df = emission_dim + emission_prior_extra_df
 
     @property
-    def emission_shape(self):
+    def emission_shape(self) -> Tuple[int]:
+        """Shape of the emission vector."""
         return (self.emission_dim,)
 
-    def distribution(self, params, state, inputs=None):
+    def distribution(
+            self, 
+            params: ParamsGaussianHMMEmissions,
+            state: IntScalar,
+            inputs: Optional[Array] = None
+            ) -> tfd.Distribution:
+        """Return the emission distribution for a given state."""
+        # Add jitter to the covariance for numerical stability:
+        jitter = 1e-6 * jnp.eye(self.emission_dim)
+        cov = params.covs[state] + jitter
         return tfd.MultivariateNormalFullCovariance(
-            params.means[state], params.covs[state])
+            params.means[state], cov)
 
-    def log_prior(self, params):
+    def log_prior(self, params: ParamsGaussianHMMEmissions) -> Float[Array, ""]:
+        """Return the log prior probability of the emission parameters."""
         return NormalInverseWishart(self.emission_prior_mean, self.emission_prior_conc,
                                    self.emission_prior_df, self.emission_prior_scale).log_prob(
             (params.covs, params.means)).sum()
 
-    def initialize(self, key=jr.PRNGKey(0),
-                   method="prior",
-                   emission_means=None,
-                   emission_covariances=None,
-                   emissions=None):
+    def initialize(self, 
+                   key: Array = jr.PRNGKey(0),
+                   method: str = "prior",
+                   emission_means: Optional[Float[Array, "num_states emission_dim"]] = None,
+                   emission_covariances: Optional[Float[Array, "num_states emission_dim emission_dim"]] = None,
+                   emissions: Optional[Float[Array, "num_timesteps emission_dim"]] = None
+        ) -> Tuple[ParamsGaussianHMMEmissions, ParamsGaussianHMMEmissions]:
+        """Initialize the model parameters and their corresponding properties.
+
+        Args:
+            key: random number generator for unspecified parameters. Must not be None if there are any unspecified parameters.
+            method: method for initializing unspecified parameters. Both "prior" and "kmeans" are supported.
+            emission_means: manually specified emission means.
+            emission_covariances: manually specified emission covariances.
+            emissions: emissions for initializing the parameters with kmeans.
+
+        Returns:
+            Tuple of (params, props) where params are the initialized parameters and props are their properties.
+        """
         if method.lower() == "kmeans":
             assert emissions is not None, "Need emissions to initialize the model with K-Means!"
             from sklearn.cluster import KMeans
@@ -101,46 +127,66 @@ class GaussianHMMEmissions(HMMEmissions):
             covs=ParameterProperties(constrainer=RealToPSDBijector()))
         return params, props
 
-    # def collect_suff_stats(self, params, posterior, emissions, inputs=None):
-    #     expected_states = posterior.smoothed_probs
-    #     return dict(
-    #         sum_w=jnp.einsum("tk->k", expected_states),
-    #         sum_x=jnp.einsum("tk,ti->ki", expected_states, emissions),
-    #         sum_xxT=jnp.einsum("tk,ti,tj->kij", expected_states, emissions, emissions)
-    #     )
+    def collect_suff_stats(
+            self, 
+            params: ParamsGaussianHMMEmissions, 
+            posterior: HMMPosterior,
+            emissions: Float[Array, "num_timesteps emission_dim"], 
+            inputs: Optional[Array] = None
+        ) -> Dict[str, Float[Array, "..."]]:
+        """Collect sufficient statistics for the M-step of the EM algorithm."""
+        expected_states = posterior.smoothed_probs
+        return dict(
+            sum_w=jnp.einsum("tk->k", expected_states),
+            sum_x=jnp.einsum("tk,ti->ki", expected_states, emissions),
+            sum_xxT=jnp.einsum("tk,ti,tj->kij", expected_states, emissions, emissions)
+        )
 
-    # def initialize_m_step_state(self, params, props):
-    #     return None
+    def initialize_m_step_state(self, params: ParamsGaussianHMMEmissions, 
+                                props: ParamsGaussianHMMEmissions) -> None:
+        """Initialize the M-step state."""
+        return None
 
-    # def m_step(self, params, props, batch_stats, m_step_state):
-    #     if props.covs.trainable and props.means.trainable:
-    #         niw_prior = NormalInverseWishart(loc=self.emission_prior_mean,
-    #                                         mean_concentration=self.emission_prior_conc,
-    #                                         df=self.emission_prior_df,
-    #                                         scale=self.emission_prior_scale)
+    def m_step(
+            self, 
+            params: ParamsGaussianHMMEmissions, 
+            props: ParamsGaussianHMMEmissions, 
+            batch_stats: Dict[str, Float[Array, "..."]], 
+            m_step_state: Any
+        ) -> Tuple[ParamsGaussianHMMEmissions, Any]:
+        """Perform the M-step of the EM algorithm."""
+        if props.covs.trainable and props.means.trainable:
+            niw_prior = NormalInverseWishart(loc=self.emission_prior_mean,
+                                            mean_concentration=self.emission_prior_conc,
+                                            df=self.emission_prior_df,
+                                            scale=self.emission_prior_scale)
 
-    #         # Find the posterior parameters of the NIW distribution
-    #         def _single_m_step(stats):
-    #             niw_posterior = niw_posterior_update(niw_prior, (stats['sum_x'], stats['sum_xxT'], stats['sum_w']))
-    #             return niw_posterior.mode()
+            # Find the posterior parameters of the NIW distribution
+            def _single_m_step(stats):
+                """Perform the M-step for a single state."""
+                niw_posterior = niw_posterior_update(niw_prior, (stats['sum_x'], stats['sum_xxT'], stats['sum_w']))
+                return niw_posterior.mode()
 
-    #         emission_stats = pytree_sum(batch_stats, axis=0)
-    #         covs, means = vmap(_single_m_step)(emission_stats)
-    #         params = params._replace(means=means, covs=covs)
+            emission_stats = pytree_sum(batch_stats, axis=0)
+            covs, means = vmap(_single_m_step)(emission_stats)
+            params = params._replace(means=means, covs=covs)
 
-    #     elif props.covs.trainable and not props.means.trainable:
-    #         raise NotImplementedError("GaussianHMM.fit_em() does not yet support fixed means and trainable covariance")
+        elif props.covs.trainable and not props.means.trainable:
+            raise NotImplementedError("GaussianHMM.fit_em() does not yet support fixed means and trainable covariance")
 
-    #     elif not props.covs.trainable and props.means.trainable:
-    #         raise NotImplementedError("GaussianHMM.fit_em() does not yet support fixed covariance and trainable means")
+        elif not props.covs.trainable and props.means.trainable:
+            raise NotImplementedError("GaussianHMM.fit_em() does not yet support fixed covariance and trainable means")
 
-    #     return params, m_step_state
+        return params, m_step_state
+    
 
 ### Now for the models ###
 class ParamsGaussianHMM(NamedTuple):
+    """Parameters for a Gaussian HMM."""
     initial: ParamsStandardHMMInitialState
     transitions: ParamsStandardHMMTransitions
     emissions: ParamsGaussianHMMEmissions
+
 
 class GaussianHMM(HMM):
     r"""An HMM with multivariate normal (i.e. Gaussian) emissions.
@@ -171,10 +217,10 @@ class GaussianHMM(HMM):
     """
     def __init__(self, num_states: int,
                  emission_dim: int,
-                 initial_probs_concentration: Union[Scalar, Float[Array, "num_states"]]=1.1,
-                 transition_matrix_concentration: Union[Scalar, Float[Array, "num_states"]]=1.1,
+                 initial_probs_concentration: Union[Scalar, Float[Array, " num_states"]]=1.1,
+                 transition_matrix_concentration: Union[Scalar, Float[Array, " num_states"]]=1.1,
                  transition_matrix_stickiness: Scalar=0.0,
-                 emission_prior_mean: Union[Scalar, Float[Array, "emission_dim"]]=0.0,
+                 emission_prior_mean: Union[Scalar, Float[Array, " emission_dim"]]=0.0,
                  emission_prior_concentration: Scalar=1e-4,
                  emission_prior_scale: Union[Scalar, Float[Array, "emission_dim emission_dim"]]=1e-4,
                  emission_prior_extra_df: Scalar=0.1):
@@ -190,9 +236,9 @@ class GaussianHMM(HMM):
         super().__init__(num_states, initial_component, transition_component, emission_component)
 
     def initialize(self,
-                   key: jr.PRNGKey=jr.PRNGKey(0),
+                   key: Array=jr.PRNGKey(0),
                    method: str="prior",
-                   initial_probs: Optional[Float[Array, "num_states"]]=None,
+                   initial_probs: Optional[Float[Array, " num_states"]]=None,
                    transition_matrix: Optional[Float[Array, "num_states num_states"]]=None,
                    emission_means: Optional[Float[Array, "num_states emission_dim"]]=None,
                    emission_covariances:  Optional[Float[Array, "num_states emission_dim emission_dim"]]=None,
@@ -219,7 +265,13 @@ class GaussianHMM(HMM):
         """
         key1, key2, key3 = jr.split(key , 3)
         params, props = dict(), dict()
-        params["initial"], props["initial"] = self.initial_component.initialize(key1, method=method, initial_probs=initial_probs)
-        params["transitions"], props["transitions"] = self.transition_component.initialize(key2, method=method, transition_matrix=transition_matrix)
-        params["emissions"], props["emissions"] = self.emission_component.initialize(key3, method=method, emission_means=emission_means, emission_covariances=emission_covariances, emissions=emissions)
+        params["initial"], props["initial"] = self.initial_component.initialize(
+            key1, method=method, initial_probs=initial_probs
+        )
+        params["transitions"], props["transitions"] = self.transition_component.initialize(
+            key2, method=method, transition_matrix=transition_matrix
+        )
+        params["emissions"], props["emissions"] = self.emission_component.initialize(
+            key3, method=method, emission_means=emission_means, emission_covariances=emission_covariances, emissions=emissions
+        )
         return ParamsGaussianHMM(**params), ParamsGaussianHMM(**props)
