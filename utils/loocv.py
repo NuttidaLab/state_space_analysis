@@ -29,7 +29,7 @@ def cross_validate_regressor(model, emissions, inputs, key, num_iters=100, init 
 
     def _fit_fold(y_train, y_val, x_train, x_val):
         # Fit the model on the training fold using the training inputs.
-        fit_params, _ = model.fit_em(params, props, y_train, num_iters=num_iters, inputs=x_train, verbose=False)
+        fit_params, _ = model.fit_em(params, props, y_train, inputs=x_train, num_iters=num_iters, verbose=False)
         return model.marginal_log_prob(fit_params, y_val, inputs=x_val)
 
     # Vectorize the fold-fitting over all folds.
