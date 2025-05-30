@@ -1,7 +1,7 @@
-# Block model implementation
 
 import jax.numpy as jnp
 import jax.random as jr
+import jax.nn as jnn
 from jax import vmap
 import optax
 from jaxtyping import Float, Array
@@ -18,95 +18,94 @@ from typing import NamedTuple, Optional, Tuple, Union
 tfd = tfp.distributions
 tfb = tfp.bijectors
 
-class ParamsBlockHMMEmissions(NamedTuple):    
-    weights_rt: Union[Float[Array, "num_states 6"], ParameterProperties]
-    alpha_rt: Union[Float[Array, "num_states 1"], ParameterProperties]
-    weights_ra: Union[Float[Array, "num_states 7"], ParameterProperties]
-    kappa_ra: Union[Float[Array, "num_states 1"], ParameterProperties]
-    weights_re: Union[Float[Array, "num_states 4"], ParameterProperties]
-    phi_re: Union[Float[Array, "num_states 1"], ParameterProperties]
+# New emission parameterization reflecting final GLM/VM formulas
+class ParamsBlockHMMEmissions(NamedTuple):
+    # RT GLM: 1 + Error * (Attention + Coh + Exp) => intercept + 1 Error + 3 flags + 3 interactions = 8
+    weights_rt:    Union[Float[Array, "num_states 8"], ParameterProperties]
+    alpha_rt:      Union[Float[Array, "num_states"],   ParameterProperties]
+    # RA mixture: 1 + stim + prev_stim + prev_resp + Attention + Coh + Exp = 7 features each
+    weights_ra1:   Union[Float[Array, "num_states 7"], ParameterProperties]
+    weights_ra2:   Union[Float[Array, "num_states 7"], ParameterProperties]
+    mixture_logits_ra: Union[Float[Array, "num_states 2"], ParameterProperties]
+    kappa1_ra:     Union[Float[Array, "num_states"],   ParameterProperties]
+    kappa2_ra:     Union[Float[Array, "num_states"],   ParameterProperties]
+    # Error GLM: 1 + rt * (Attention + Coh + Exp) => intercept + 1 rt + 3 flags + 3 interactions = 8
+    weights_re:    Union[Float[Array, "num_states 8"], ParameterProperties]
+    alpha_re:        Union[Float[Array, "num_states"],   ParameterProperties]
 
 class ParamsBlockHMM(NamedTuple):
     initial: ParamsStandardHMMInitialState
     transitions: ParamsStandardHMMTransitions
     emissions: ParamsBlockHMMEmissions
-    
+
 class BlockHMMEmissions(HMMEmissions):
     def __init__(self,
-                 num_states,
-                 input_dim, # 2+3 from rt, 3 + 3 from ra, 3 from re 
-                 emission_dim, # There are 3 of them -> rt, ra, re
+                 num_states: int,
+                 input_dim: int = 23,       # 8(rt) + 7(ra) + 8(error)
+                 emission_dim: int = 3,
                  m_step_optimizer=optax.adam(1e-3),
                  m_step_num_iters=50):
         super().__init__(m_step_optimizer=m_step_optimizer, m_step_num_iters=m_step_num_iters)
-        self.num_states = num_states
-        self.input_dim = input_dim # input shapes # 2 + 3 + 1 from rt, 3 + 3 + 1 from ra, 3 + 1 from re
+        self.num_states   = num_states
+        self.input_dim    = input_dim
         self.emission_dim = emission_dim
 
     @property
     def emission_shape(self):
         return (self.emission_dim,)
 
-    def initialize( self,
-                    key=jr.PRNGKey(0),
-                    method="prior",
-                    weights_rt = None,
-                    alpha_rt = None,
-                    weights_ra = None,
-                    kappa_ra = None,
-                    weights_re = None,
-                    phi_re = None,
-                    emissions=None):
+    def initialize(self,
+                   key=jr.PRNGKey(0),
+                   method="prior",
+                   weights_rt=None, alpha_rt=None,
+                   weights_ra1=None, weights_ra2=None, mixture_logits_ra=None,
+                   kappa1_ra=None,  kappa2_ra=None,
+                   weights_re=None, alpha_re=None,
+                   emissions=None):
 
         if method == "prior":
-            
-            # Reaction time component 
-            weights_rt = jnp.zeros((self.num_states, 6)) # error, surprise | attention, coherence, expectiation | bias
-            # learn a positive shape α[state]
-            alpha_rt = jnp.ones((self.num_states, ))
-            
-            # Response angle component 
-            weights_ra = jnp.zeros((self.num_states, 7)) # stim, prev. stim, pre. resp | attention, coherence, expectation | bias
-            # learn a positive concentration \kappa[state]
-            kappa_ra = jnp.ones((self.num_states, ))
-            
-            # Response error component
-            weights_re = jnp.zeros((self.num_states, 4)) # | attention, coherence, expectation | bias
-            # learn a positive “precision” φ per state  
-            phi_re = jnp.ones((self.num_states, ))
-            
+            # RT
+            weights_rt = jnp.zeros((self.num_states, 8))
+            alpha_rt   = jnp.ones((self.num_states,))
+            # RA mixture
+            weights_ra1       = jnp.zeros((self.num_states, 7))
+            weights_ra2       = jnp.zeros((self.num_states, 7))
+            mixture_logits_ra = jnp.zeros((self.num_states, 2))
+            kappa1_ra         = jnp.ones((self.num_states,))
+            kappa2_ra         = jnp.ones((self.num_states,))
+            # Error
+            weights_re = jnp.zeros((self.num_states, 8))
+            alpha_re     = jnp.ones((self.num_states,))
+        
         params = ParamsBlockHMMEmissions(
-            
-            weights_rt=weights_rt,
-            alpha_rt=alpha_rt,
-            
-            weights_ra=weights_ra,
-            kappa_ra=kappa_ra,
-            
-            weights_re=weights_re,
-            phi_re=phi_re,
+            weights_rt, alpha_rt,
+            weights_ra1, weights_ra2, mixture_logits_ra, kappa1_ra, kappa2_ra,
+            weights_re, alpha_re
         )
-        
         props = ParamsBlockHMMEmissions(
-            
-            weights_rt=ParameterProperties(),
-            alpha_rt=ParameterProperties(constrainer=tfb.Softplus()), #Positive reals
-            
-            weights_ra=ParameterProperties(),
-            kappa_ra=ParameterProperties(constrainer=tfb.Softplus()), #Positive reals
-            
-            weights_re=ParameterProperties(),
-            phi_re=ParameterProperties(constrainer=tfb.Softplus()), #Positive reals
+            ParameterProperties(),                           # weights_rt
+            ParameterProperties(constrainer=tfb.Softplus()), # alpha_rt > 0
+            ParameterProperties(),                           # weights_ra1
+            ParameterProperties(),                           # weights_ra2
+            ParameterProperties(),                           # mixture_logits_ra
+            ParameterProperties(constrainer=tfb.Softplus()), # kappa1_ra > 0
+            ParameterProperties(constrainer=tfb.Softplus()), # kappa2_ra > 0
+            ParameterProperties(),                           # weights_re
+            ParameterProperties(constrainer=tfb.Softplus())  # alpha_re > 0
         )
-        
         return params, props
-    
+
     def distribution(self, params, state, inputs):
-        
-        # Reaction time component
-        # ~ Gamma(concentration, rate) where concentration = α[state], rate = α[state] / μ
-        # μ = w^T * x, where w = weights[state]
-        lp_rt = params.weights_rt[state] @ inputs[:6]
+        # Inputs ordering (length 23):
+        # [0:8]   --> rt features: [1, Error, Attention, Coh, Exp, Error:Att, Error:Coh, Error:Exp]
+        # [8:15]  --> ra features: [1, stim, prev_stim, prev_resp, Attention, Coh, Exp]
+        # [15:23] --> error features: [1, rt, Attention, Coh, Exp, rt:Att, rt:Coh, rt:Exp]
+        x_rt = inputs[0:8]
+        x_ra = inputs[8:15]
+        x_re = inputs[15:23]
+
+        # 1) Gamma GLM for RT
+        lp_rt = params.weights_rt[state] @ x_rt
         mu_rt = jnp.exp(lp_rt)
         dist_rt = tfd.Independent(
             tfd.Gamma(
@@ -115,79 +114,99 @@ class BlockHMMEmissions(HMMEmissions):
             ),
             reinterpreted_batch_ndims=0
         )
-        
-        # Response angle component 
-        # ~ VonMises(loc, kappa) where loc = w^T * x, concentration = kappa
-        lp_ra = params.weights_ra[state] @ inputs[6:13]
+
+        # 2) 2-component Von Mises mixture for RA
+        mu1 = params.weights_ra1[state] @ x_ra
+        mu2 = params.weights_ra2[state] @ x_ra
+        w_raw = params.mixture_logits_ra[state]
+        w     = jnn.softmax(w_raw)
         dist_ra = tfd.Independent(
-            tfd.VonMises(
-                loc=lp_ra,
-                concentration=params.kappa_ra[state]
+            tfd.MixtureSameFamily(
+                mixture_distribution=tfd.Categorical(probs=w),
+                components_distribution=tfd.VonMises(
+                    loc=jnp.stack([mu1, mu2], axis=-1),
+                    concentration=jnp.stack([params.kappa1_ra[state],
+                                            params.kappa2_ra[state]], axis=-1)
+                )
             ),
             reinterpreted_batch_ndims=0
         )
-        
-        # Response error component
-        # ~ Beta(α, β) where α = μ * φ, β = (1 - μ) * φ
-        # μ = sigmoid(w^T * x) maps real → (0,1)
-        lp_re = params.weights_re[state] @ inputs[13:17]
-        mu_re = 1.0 / (1.0 + jnp.exp(-lp_re)) # maps real → (0,1)
-        phi_re = params.phi_re[state]
-        alpha = mu_re * phi_re
-        beta  = (1. - mu_re) * phi_re
+
+        # 3) Gamma GLM for Error
+        lp_re = params.weights_re[state] @ x_re
+        mu_re = jnp.exp(lp_re)
         dist_re = tfd.Independent(
-            tfd.Beta(concentration1=alpha,
-                    concentration0=beta),
+            tfd.Gamma(
+                concentration=params.alpha_re[state],
+                rate=params.alpha_re[state] / mu_re
+            ),
             reinterpreted_batch_ndims=0
         )
 
-        # Joint them so `log_prob` = sum of three components
-        return tfd.JointDistributionSequential([
-            dist_rt,
-            dist_ra,
-            dist_re,
-        ])
-
+        return tfd.JointDistributionSequential([dist_rt, dist_ra, dist_re])
+    
     def log_prior(self, params):
         return 0.0
 
 class BlockHMM(HMM):
-    def __init__(self,
-                 num_states: int,
-                 input_dim: int,
-                 emission_dim: int,
-                 initial_probs_concentration: Union[Scalar, Float[Array, "num_states"]]=1.1,
-                 transition_matrix_concentration: Union[Scalar, Float[Array, "num_states"]]=1.1,
-                 transition_matrix_stickiness: Scalar=0.0):
+    def __init__(
+        self,
+        num_states: int,
+        input_dim: int = 23,
+        emission_dim: int = 3,
+        initial_probs_concentration: Union[Scalar, Float[Array, "num_states"]] = 1.1,
+        transition_matrix_concentration: Union[Scalar, Float[Array, "num_states"]] = 1.1,
+        transition_matrix_stickiness: Scalar = 0.0
+    ):
         self.emission_dim = emission_dim
         self.input_dim = input_dim
-        initial_component = StandardHMMInitialState(num_states, initial_probs_concentration=initial_probs_concentration)
-        transition_component = StandardHMMTransitions(num_states, concentration=transition_matrix_concentration, stickiness=transition_matrix_stickiness)
-        emission_component = BlockHMMEmissions(num_states, input_dim, emission_dim)
-        super().__init__(num_states, initial_component, transition_component, emission_component)
+        initial     = StandardHMMInitialState(
+            num_states,
+            initial_probs_concentration=initial_probs_concentration
+        )
+        transitions = StandardHMMTransitions(
+            num_states,
+            concentration=transition_matrix_concentration,
+            stickiness=transition_matrix_stickiness
+        )
+        emissions   = BlockHMMEmissions(num_states, input_dim, emission_dim)
+        super().__init__(num_states, initial, transitions, emissions)
 
     @property
     def inputs_shape(self):
         return (self.input_dim,)
 
-    def initialize(self,
-                   key: jr.PRNGKey=jr.PRNGKey(0),
-                   method: str="prior",
-                   initial_probs: Optional[Float[Array, "num_states"]]=None,
-                   transition_matrix: Optional[Float[Array, "num_states num_states"]]=None,
-                   weights_rt: Optional[Float[Array, "num_states 6"]]=None,
-                   alpha_rt: Optional[Float[Array, "num_states 1"]]=None,
-                   weights_ra: Optional[Float[Array, "num_states 7"]]=None,
-                   kappa_ra: Optional[Float[Array, "num_states 1"]]=None,
-                   weights_re: Optional[Float[Array, "num_states 4"]]=None,
-                   phi_re: Optional[Float[Array, "num_states 1"]]=None,
-                   emissions:  Optional[Float[Array, "num_timesteps emission_dim"]]=None
-        ) -> Tuple[HMMParameterSet, HMMPropertySet]:
-
-        key1, key2, key3 = jr.split(key , 3)
+    def initialize(
+        self,
+        key: jr.PRNGKey = jr.PRNGKey(0),
+        method: str = "prior",
+        initial_probs: Optional[Float[Array, "num_states"]] = None,
+        transition_matrix: Optional[Float[Array, "num_states num_states"]] = None,
+        # Emission init args:
+        weights_rt: Optional[Float[Array, "num_states 8"]] = None,
+        alpha_rt:   Optional[Float[Array, "num_states"]]   = None,
+        weights_ra1: Optional[Float[Array, "num_states 7"]] = None,
+        weights_ra2: Optional[Float[Array, "num_states 7"]] = None,
+        mixture_logits_ra: Optional[Float[Array, "num_states 2"]] = None,
+        kappa1_ra: Optional[Float[Array, "num_states"]]   = None,
+        kappa2_ra: Optional[Float[Array, "num_states"]]   = None,
+        weights_re: Optional[Float[Array, "num_states 8"]] = None,
+        alpha_re:    Optional[Float[Array, "num_states"]]   = None,
+        emissions:  Optional[Float[Array, "num_timesteps emission_dim"]]=None
+    ) -> Tuple[HMMParameterSet, HMMPropertySet]:
+        # Split RNG
+        # Initialize each component
+        k1, k2, k3 = jr.split(key, 3)
         params, props = dict(), dict()
-        params["initial"], props["initial"] = self.initial_component.initialize(key1, method=method, initial_probs=initial_probs)
-        params["transitions"], props["transitions"] = self.transition_component.initialize(key2, method=method, transition_matrix=transition_matrix)
-        params["emissions"], props["emissions"] = self.emission_component.initialize(key3, method=method, emissions=emissions, 
-            weights_rt=weights_rt, alpha_rt=alpha_rt, weights_ra=weights_ra, kappa_ra=kappa_ra, weights_re=weights_re, phi_re=phi_re)
+        
+        params["initial"], props["initial"] = self.initial_component.initialize(k1, method=method, initial_probs=initial_probs)
+        params["transitions"], props["transitions"] = self.transition_component.initialize(k2, method=method, transition_matrix=transition_matrix)
+        params["emissions"], props["emissions"] = self.emission_component.initialize(
+            k3, method=method,
+            weights_rt=weights_rt, alpha_rt=alpha_rt,
+            weights_ra1=weights_ra1, weights_ra2=weights_ra2, mixture_logits_ra=mixture_logits_ra,
+            kappa1_ra=kappa1_ra, kappa2_ra=kappa2_ra,
+            weights_re=weights_re, alpha_re=alpha_re,
+            emissions=emissions
+        )
         return ParamsBlockHMM(**params), ParamsBlockHMM(**props)
