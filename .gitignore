@@ -2,3 +2,4 @@ axej_eeg/*
 *.pyc
 *.o
 data_caches/*
+old/*
