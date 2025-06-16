@@ -21,8 +21,8 @@ tfb = tfp.bijectors
 # New emission parameterization reflecting final GLM/VM formulas
 class ParamsBlockHMMrtEmissions(NamedTuple):
     # RT GLM: 1 + Error * (Attention + Coh + Exp) => intercept + 1 Error + 3 flags + 3 interactions = 8
-    weights_rt:    Union[Float[Array, "num_states 8"], ParameterProperties]
-    alpha_rt:      Union[Float[Array, "num_states 1"],   ParameterProperties]
+    w1:    Union[Float[Array, "num_states 8"], ParameterProperties] # weights
+    w2:      Union[Float[Array, "num_states 1"],   ParameterProperties] # alpha
 
 class ParamsBlockHMMrt(NamedTuple):
     initial: ParamsStandardHMMInitialState
@@ -48,20 +48,20 @@ class BlockHMMrtEmissions(HMMEmissions):
     def initialize(self,
                    key=jr.PRNGKey(0),
                    method="prior",
-                   weights_rt=None, alpha_rt=None,
+                   w1=None, w2=None,
                    emissions=None):
 
         if method == "prior":
             # RT
-            weights_rt = jnp.zeros((self.num_states, 8))
-            alpha_rt   = jnp.ones((self.num_states, 1))
+            w1 = jnp.zeros((self.num_states, 8))
+            w2   = jnp.ones((self.num_states, 1))
         
         params = ParamsBlockHMMrtEmissions(
-            weights_rt, alpha_rt,
+            w1, w2,
         )
         props = ParamsBlockHMMrtEmissions(
-            ParameterProperties(),                           # weights_rt
-            ParameterProperties(constrainer=tfb.Softplus()), # alpha_rt > 0
+            ParameterProperties(),                           # w1
+            ParameterProperties(constrainer=tfb.Softplus()), # w2 > 0
         )
         return params, props
 
@@ -71,11 +71,16 @@ class BlockHMMrtEmissions(HMMEmissions):
         x_rt = inputs
 
         # 1) Gamma GLM for RT
-        lp_rt = params.weights_rt[state] @ x_rt
-        mu_rt = jnp.exp(lp_rt)
+        lp_rt = params.w1[state] @ x_rt
+                
+        # ─── clamp to a “safe” window [−20, +20] ─────────────────────────────────
+        lp_rt_clamped = jnp.clip(lp_rt, a_min=-20.0, a_max=20.0)
+        mu_rt         = jnp.exp(lp_rt_clamped)
+        # ─── ensure the Gamma rate never becomes exactly 0 ─────────────────────────
+        
         base = tfd.Gamma(
-                concentration=params.alpha_rt[state],
-                rate=params.alpha_rt[state] / mu_rt
+                concentration=params.w2[state],
+                rate=params.w2[state] / mu_rt
         )
         
         dist_rt = tfd.Independent(
@@ -122,8 +127,8 @@ class BlockHMMrt(HMM):
         initial_probs: Optional[Float[Array, "num_states"]] = None,
         transition_matrix: Optional[Float[Array, "num_states num_states"]] = None,
         # Emission init args:
-        weights_rt: Optional[Float[Array, "num_states 8"]] = None,
-        alpha_rt:   Optional[Float[Array, "num_states 1"]]   = None,
+        w1: Optional[Float[Array, "num_states 8"]] = None,
+        w2:   Optional[Float[Array, "num_states 1"]]   = None,
         
         emissions:  Optional[Float[Array, "num_timesteps emission_dim"]]=None
     ) -> Tuple[HMMParameterSet, HMMPropertySet]:
@@ -136,7 +141,7 @@ class BlockHMMrt(HMM):
         params["transitions"], props["transitions"] = self.transition_component.initialize(k2, method=method, transition_matrix=transition_matrix)
         params["emissions"], props["emissions"] = self.emission_component.initialize(
             k3, method=method,
-            weights_rt=weights_rt, alpha_rt=alpha_rt,
+            w1=w1, w2=w2,
             emissions=emissions
         )
         return ParamsBlockHMMrt(**params), ParamsBlockHMMrt(**props)

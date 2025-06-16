@@ -15,15 +15,15 @@ class BlockOneRA:
         self.input_dim = 7
         self.params = None
 
-    def initialize(self, key: jr.PRNGKey, method="prior", w_scale: float = 1e-2) -> Tuple[dict, dict]:
+    def initialize(self, key: jr.PRNGKey, method="prior", w_scale: float = 1e-3) -> Tuple[dict, dict]:
         """
         Initialize exactly the same set of parameters as BlockHMMEmissions for num_states=1.
         """
-        ks = jr.split(key, 9)
+        ks = jr.split(key, 2)
         params = {
             # RA mixture: two GLM means + mixture logits + concentrations
-            "weights_ra":      jr.normal(ks[2], (7,)) * w_scale,
-            "kappa_ra":        tfb.Softplus()(jr.normal(ks[5], ()) * 0.1 + 0.5) + 1.0,
+            "weights_ra":      jr.normal(ks[0], (7,)) * w_scale,
+            "kappa_ra":        tfb.Softplus()(jr.normal(ks[1], ()) * 0.1 + 0.5) + 1.0,
         }
         # no properties needed here (empty dict matches your existing signature)
         return params, {}
@@ -42,7 +42,7 @@ class BlockOneRA:
         mu = jnp.einsum('...i,i->...', x_ra, params["weights_ra"])
         kappa  = params["kappa_ra"]
         return tfd.Independent(
-            tfd.VomMises(
+            tfd.VonMises(
                 loc = mu,
                 concentration = kappa
             ),
@@ -74,13 +74,12 @@ class BlockOneRA:
         self.params = p
         return p, losses
 
-    # def marginal_log_prob(self, params, emissions, inputs):
-    #     # single = False
-    #     # if emissions.ndim == 2:
-    #     #     emissions = emissions[jnp.newaxis, ...]
-    #     #     inputs    = inputs[jnp.newaxis, ...]
-    #     #     single = True
-    #     dist = self.distribution(params, inputs)
-    #     rt_obs, ra_obs, re_obs = emissions[...,0], emissions[...,1], emissions[...,2]
-    #     ll = dist.log_prob([rt_obs, ra_obs, re_obs])
-    #     return jnp.sum(ll, axis=-1)
+    def marginal_log_prob(self, params, emissions, inputs):
+        # single = False
+        # if emissions.ndim == 2:
+        #     emissions = emissions[jnp.newaxis, ...]
+        #     inputs    = inputs[jnp.newaxis, ...]
+        #     single = True
+        dist = self.distribution(params, inputs)
+        ll = dist.log_prob(emissions[..., 0])
+        return jnp.sum(ll, axis=-1)

@@ -21,8 +21,8 @@ tfb = tfp.bijectors
 # New emission parameterization reflecting final GLM/VM formulas
 class ParamsBlockHMMraEmissions(NamedTuple):
     # RA mixture: 1 + stim + prev_stim + prev_resp + Attention + Coh + Exp = 7 features each
-    weights_ra:   Union[Float[Array, "num_states 7"], ParameterProperties]
-    kappa_ra:     Union[Float[Array, "num_states 1"],   ParameterProperties]
+    w1:   Union[Float[Array, "num_states 7"], ParameterProperties] # weights
+    w2:     Union[Float[Array, "num_states 1"],   ParameterProperties] # kappa concentration
 
 
 class ParamsBlockHMMra(NamedTuple):
@@ -49,29 +49,29 @@ class BlockHMMraEmissions(HMMEmissions):
     def initialize(self,
                    key=jr.PRNGKey(0),
                    method="prior",
-                   weights_ra=None,
-                   kappa_ra=None,
+                   w1=None,
+                   w2=None,
                    emissions=None):
 
         if method == "prior":
             # RA mixture
-            weights_ra       = jnp.zeros((self.num_states, 7))
-            kappa_ra         = jnp.ones((self.num_states, 1))
+            w1       = jnp.zeros((self.num_states, 7))
+            w2         = jnp.ones((self.num_states, 1))
 
         params = ParamsBlockHMMraEmissions(
-            weights_ra, kappa_ra,
+            w1, w2,
         )
         props = ParamsBlockHMMraEmissions(
-            ParameterProperties(),                           # weights_ra
-            ParameterProperties(constrainer=tfb.Softplus()), # kappa_ra > 0
+            ParameterProperties(),                           # w1
+            ParameterProperties(constrainer=tfb.Softplus()), # w2 > 0
         )
         return params, props
 
     def distribution(self, params, state, inputs):
         x_ra = inputs
         
-        lp = params.weights_ra[state] @ x_ra
-        kappa = params.kappa_ra[state]
+        lp = params.w1[state] @ x_ra
+        kappa = params.w2[state]
         return tfd.Independent(
             tfd.VonMises(
                 loc=lp,
@@ -118,8 +118,8 @@ class BlockHMMra(HMM):
         initial_probs: Optional[Float[Array, "num_states"]] = None,
         transition_matrix: Optional[Float[Array, "num_states num_states"]] = None,
         # Emission init args:
-        weights_ra: Optional[Float[Array, "num_states 7"]] = None,
-        kappa_ra: Optional[Float[Array, "num_states 1"]]   = None,
+        w1: Optional[Float[Array, "num_states 7"]] = None,
+        w2: Optional[Float[Array, "num_states 1"]]   = None,
         emissions:  Optional[Float[Array, "num_timesteps emission_dim"]]=None
     ) -> Tuple[HMMParameterSet, HMMPropertySet]:
         # Split RNG
@@ -131,8 +131,8 @@ class BlockHMMra(HMM):
         params["transitions"], props["transitions"] = self.transition_component.initialize(k2, method=method, transition_matrix=transition_matrix)
         params["emissions"], props["emissions"] = self.emission_component.initialize(
             k3, method=method,
-            weights_ra=weights_ra1,
-            kappa_ra=kappa1_ra,
+            w1=w1,
+            w2=w2,
             emissions=emissions
         )
         return ParamsBlockHMMra(**params), ParamsBlockHMMra(**props)

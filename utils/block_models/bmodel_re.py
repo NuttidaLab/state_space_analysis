@@ -21,8 +21,8 @@ tfb = tfp.bijectors
 # New emission parameterization reflecting final GLM/VM formulas
 class ParamsBlockHMMreEremissions(NamedTuple):
     # Error GLM: 1 + rt * (Attention + Coh + Exp) => intercept + 1 rt + 3 flags + 3 interactions = 8
-    weights_re:    Union[Float[Array, "num_states 8"], ParameterProperties]
-    alpha_re:        Union[Float[Array, "num_states 1"],   ParameterProperties]
+    w1:    Union[Float[Array, "num_states 8"], ParameterProperties] # weights
+    w2:        Union[Float[Array, "num_states 1"],   ParameterProperties] # alpha
 
 class ParamsBlockHMMre(NamedTuple):
     initial: ParamsStandardHMMInitialState
@@ -48,20 +48,20 @@ class BlockHMMreEremissions(HMMEmissions):
     def initialize(self,
                    key=jr.PRNGKey(0),
                    method="prior",
-                   weights_re=None, alpha_re=None,
+                   w1=None, w2=None,
                    emissions=None):
 
         if method == "prior":
             # Error
-            weights_re = jnp.zeros((self.num_states, 8))
-            alpha_re     = jnp.ones((self.num_states, 1))
+            w1 = jnp.zeros((self.num_states, 8))
+            w2     = jnp.ones((self.num_states, 1))
         
         params = ParamsBlockHMMreEremissions(
-            weights_re, alpha_re
+            w1, w2
         )
         props = ParamsBlockHMMreEremissions(
-            ParameterProperties(),                           # weights_re
-            ParameterProperties(constrainer=tfb.Softplus())  # alpha_re > 0
+            ParameterProperties(),                           # w1
+            ParameterProperties(constrainer=tfb.Softplus())  # w2 > 0
         )
         return params, props
 
@@ -69,12 +69,17 @@ class BlockHMMreEremissions(HMMEmissions):
         x_re = inputs
 
         # 3) Gamma GLM for Error
-        lp_re = params.weights_re[state] @ x_re
-        mu_re = jnp.exp(lp_re)
+        lp_re = params.w1[state] @ x_re
+        
+        # ─── clamp to a “safe” window [−20, +20] ─────────────────────────────────
+        lp_re_clamped = jnp.clip(lp_re, a_min=-20.0, a_max=20.0)
+        mu_re         = jnp.exp(lp_re_clamped)
+        # ─── ensure the Gamma rate never becomes exactly 0 ─────────────────────────
+
         return tfd.Independent(
             tfd.Gamma(
-                concentration=params.alpha_re[state],
-                rate=params.alpha_re[state] / mu_re
+                concentration=params.w2[state],
+                rate=params.w2[state] / mu_re
             ),
             reinterpreted_batch_ndims=1
         )
@@ -117,8 +122,8 @@ class BlockHMMre(HMM):
         initial_probs: Optional[Float[Array, "num_states"]] = None,
         transition_matrix: Optional[Float[Array, "num_states num_states"]] = None,
         # Emission init args:
-        weights_re: Optional[Float[Array, "num_states 8"]] = None,
-        alpha_re:    Optional[Float[Array, "num_states 1"]]   = None,
+        w1: Optional[Float[Array, "num_states 8"]] = None,
+        w2:    Optional[Float[Array, "num_states 1"]]   = None,
         emissions:  Optional[Float[Array, "num_timesteps emission_dim"]]=None
     ) -> Tuple[HMMParameterSet, HMMPropertySet]:
         # Split RNG
@@ -130,7 +135,7 @@ class BlockHMMre(HMM):
         params["transitions"], props["transitions"] = self.transition_component.initialize(k2, method=method, transition_matrix=transition_matrix)
         params["emissions"], props["emissions"] = self.emission_component.initialize(
             k3, method=method,
-            weights_re=weights_re, alpha_re=alpha_re,
+            w1=w1, w2=w2,
             emissions=emissions
         )
         return ParamsBlockHMMre(**params), ParamsBlockHMMre(**props)

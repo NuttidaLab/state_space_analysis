@@ -15,15 +15,15 @@ class BlockOneRE:
         self.input_dim = 8
         self.params = None
 
-    def initialize(self, key: jr.PRNGKey, method="prior", w_scale: float = 1e-2) -> Tuple[dict, dict]:
+    def initialize(self, key: jr.PRNGKey, method="prior", w_scale: float = 1e-3) -> Tuple[dict, dict]:
         """
         Initialize exactly the same set of parameters as BlockHMMEmissions for num_states=1.
         """
-        ks = jr.split(key, 9)
+        ks = jr.split(key, 2)
         params = {
             # Error GLM
-            "weights_re":       jr.normal(ks[7], (8,)) * w_scale,
-            "alpha_re":         tfb.Softplus()(jr.normal(ks[8], ()) * 0.1 + 0.5) + 1.0,
+            "weights_re":       jr.normal(ks[0], (8,)) * w_scale,
+            "alpha_re":         tfb.Softplus()(jr.normal(ks[1], ()) * 0.1 + 0.5) + 1.0,
         }
         # no properties needed here (empty dict matches your existing signature)
         return params, {}
@@ -38,7 +38,10 @@ class BlockOneRE:
 
         # 3) Error ~ Gamma(GLM log-link)
         lp_re = jnp.einsum('...i,i->...', x_re, params["weights_re"])
-        mu_re = jnp.exp(lp_re)
+        # ─── clamp to a “safe” window [−20, +20] ─────────────────────────────────
+        lp_re_clamped = jnp.clip(lp_re, a_min=-20.0, a_max=20.0)
+        mu_re         = jnp.exp(lp_re_clamped)
+        # ─── ensure the Gamma rate never becomes exactly 0 ─────────────────────────
         return tfd.Independent(
             tfd.Gamma(
                 concentration=params["alpha_re"],
@@ -72,13 +75,12 @@ class BlockOneRE:
         self.params = p
         return p, losses
 
-    # def marginal_log_prob(self, params, emissions, inputs):
-    #     single = False
-    #     if emissions.ndim == 2:
-    #         emissions = emissions[jnp.newaxis, ...]
-    #         inputs    = inputs[jnp.newaxis, ...]
-    #         single = True
-    #     dist = self.distribution(params, inputs)
-    #     rt_obs, ra_obs, re_obs = emissions[...,0], emissions[...,1], emissions[...,2]
-    #     ll = dist.log_prob([rt_obs, ra_obs, re_obs])
-    #     return jnp.sum(ll, axis=-1)
+    def marginal_log_prob(self, params, emissions, inputs):
+        # single = False
+        # if emissions.ndim == 2:
+        #     emissions = emissions[jnp.newaxis, ...]
+        #     inputs    = inputs[jnp.newaxis, ...]
+        #     single = True
+        dist = self.distribution(params, inputs)
+        ll = dist.log_prob(emissions[..., 0])
+        return jnp.sum(ll, axis=-1)
