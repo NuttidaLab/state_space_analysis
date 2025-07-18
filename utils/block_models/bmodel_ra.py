@@ -20,9 +20,9 @@ tfb = tfp.bijectors
 
 # New emission parameterization reflecting final GLM/VM formulas
 class ParamsBlockHMMraEmissions(NamedTuple):
-    # RA mixture: 1 + stim + prev_stim + prev_resp + Attention + Coh + Exp = 7 features each
-    w1:   Union[Float[Array, "num_states 7"], ParameterProperties] # weights
-    w2:     Union[Float[Array, "num_states 1"],   ParameterProperties] # kappa concentration
+    # RA: 1 + stim + prev_stim + prev_resp + Attention + Coh + Exp = 7 features each
+    w1: Union[Float[Array, "num_states 7"], ParameterProperties] # weights
+    w2: Union[Float[Array, "num_states 1"],   ParameterProperties] # kappa concentration
 
 
 class ParamsBlockHMMra(NamedTuple):
@@ -68,15 +68,10 @@ class BlockHMMraEmissions(HMMEmissions):
         return params, props
 
     def distribution(self, params, state, inputs):
-        x_ra = inputs
         
-        lp = params.w1[state] @ x_ra
-        kappa = params.w2[state]
+        lp = params.w1[state] @ inputs
         return tfd.Independent(
-            tfd.VonMises(
-                loc=lp,
-                concentration=kappa
-            ),
+            tfd.VonMises(loc=lp, concentration=params.w2[state]),
             reinterpreted_batch_ndims=1
         )
     

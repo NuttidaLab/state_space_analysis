@@ -11,8 +11,8 @@ tfb = tfp.bijectors
 
 class BlockOneRE:
     def __init__(self):
-        # total input dim = 8 (rt) + 7 (ra) + 8 (re) = 23
-        self.input_dim = 8
+        # RE features: [1, Att, Coh, Exp]
+        self.input_dim = 4
         self.params = None
 
     def initialize(self, key: jr.PRNGKey, method="prior", w_scale: float = 1e-3) -> Tuple[dict, dict]:
@@ -22,8 +22,8 @@ class BlockOneRE:
         ks = jr.split(key, 2)
         params = {
             # Error GLM
-            "weights_re":       jr.normal(ks[0], (8,)) * w_scale,
-            "alpha_re":         tfb.Softplus()(jr.normal(ks[1], ()) * 0.1 + 0.5) + 1.0,
+            "weights_re": jr.normal(ks[0], (4,)) * w_scale,
+            "covs_re": jr.normal(ks[1], ()) * 0.1 + 1.0,
         }
         # no properties needed here (empty dict matches your existing signature)
         return params, {}
@@ -36,17 +36,12 @@ class BlockOneRE:
         # split
         x_re = inputs
 
-        # 3) Error ~ Gamma(GLM log-link)
-        lp_re = jnp.einsum('...i,i->...', x_re, params["weights_re"])
-        # ─── clamp to a “safe” window [−20, +20] ─────────────────────────────────
-        lp_re_clamped = jnp.clip(lp_re, a_min=-20.0, a_max=20.0)
-        mu_re         = jnp.exp(lp_re_clamped)
-        # ─── ensure the Gamma rate never becomes exactly 0 ─────────────────────────
+        # 3) Error ~ Normal(GLM log-link)
+        mu_re = jnp.einsum('...i,i->...', x_re, params["weights_re"])
+        scale_re = jnn.softplus(params["covs_re"])
+        
         return tfd.Independent(
-            tfd.Gamma(
-                concentration=params["alpha_re"],
-                rate=params["alpha_re"] / mu_re
-            ),
+            tfd.Normal(loc=mu_re, scale=scale_re),
             reinterpreted_batch_ndims=0
         )
 

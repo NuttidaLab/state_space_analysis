@@ -20,9 +20,9 @@ tfb = tfp.bijectors
 
 # New emission parameterization reflecting final GLM/VM formulas
 class ParamsBlockHMMreEremissions(NamedTuple):
-    # Error GLM: 1 + rt * (Attention + Coh + Exp) => intercept + 1 rt + 3 flags + 3 interactions = 8
-    w1:    Union[Float[Array, "num_states 8"], ParameterProperties] # weights
-    w2:        Union[Float[Array, "num_states 1"],   ParameterProperties] # alpha
+    # RE features: [1, Att, Coh, Exp]
+    w1: Union[Float[Array, "num_states 4"], ParameterProperties] # weights
+    w2: Union[Float[Array, "num_states 1"],   ParameterProperties] # alpha
 
 class ParamsBlockHMMre(NamedTuple):
     initial: ParamsStandardHMMInitialState
@@ -32,7 +32,7 @@ class ParamsBlockHMMre(NamedTuple):
 class BlockHMMreEremissions(HMMEmissions):
     def __init__(self,
                  num_states: int,
-                 input_dim: int = 8,       # 8(rt) + 7(ra) + 8(error)
+                 input_dim: int = 4,       # RE features: [1, Att, Coh, Exp]
                  emission_dim: int = 1,
                  m_step_optimizer=optax.adam(1e-3),
                  m_step_num_iters=50):
@@ -53,9 +53,9 @@ class BlockHMMreEremissions(HMMEmissions):
 
         if method == "prior":
             # Error
-            w1 = jnp.zeros((self.num_states, 8))
-            w2     = jnp.ones((self.num_states, 1))
-        
+            w1 = jnp.zeros((self.num_states, 4))
+            w2 = jnp.ones((self.num_states, 1))
+
         params = ParamsBlockHMMreEremissions(
             w1, w2
         )
@@ -66,21 +66,11 @@ class BlockHMMreEremissions(HMMEmissions):
         return params, props
 
     def distribution(self, params, state, inputs):
-        x_re = inputs
 
-        # 3) Gamma GLM for Error
-        lp_re = params.w1[state] @ x_re
-        
-        # ─── clamp to a “safe” window [−20, +20] ─────────────────────────────────
-        lp_re_clamped = jnp.clip(lp_re, a_min=-20.0, a_max=20.0)
-        mu_re         = jnp.exp(lp_re_clamped)
-        # ─── ensure the Gamma rate never becomes exactly 0 ─────────────────────────
-
+        # 3) Normal GLM for Error
+        mu_re = params.w1[state] @ inputs
         return tfd.Independent(
-            tfd.Gamma(
-                concentration=params.w2[state],
-                rate=params.w2[state] / mu_re
-            ),
+            tfd.Normal(loc=mu_re, scale=params.w2[state]),
             reinterpreted_batch_ndims=1
         )
     
@@ -91,7 +81,7 @@ class BlockHMMre(HMM):
     def __init__(
         self,
         num_states: int,
-        input_dim: int = 8,
+        input_dim: int = 4,
         emission_dim: int = 1,
         initial_probs_concentration: Union[Scalar, Float[Array, "num_states"]] = 1.1,
         transition_matrix_concentration: Union[Scalar, Float[Array, "num_states"]] = 1.1,
@@ -122,7 +112,7 @@ class BlockHMMre(HMM):
         initial_probs: Optional[Float[Array, "num_states"]] = None,
         transition_matrix: Optional[Float[Array, "num_states num_states"]] = None,
         # Emission init args:
-        w1: Optional[Float[Array, "num_states 8"]] = None,
+        w1: Optional[Float[Array, "num_states 4"]] = None,
         w2:    Optional[Float[Array, "num_states 1"]]   = None,
         emissions:  Optional[Float[Array, "num_timesteps emission_dim"]]=None
     ) -> Tuple[HMMParameterSet, HMMPropertySet]:

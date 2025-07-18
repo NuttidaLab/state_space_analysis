@@ -41,8 +41,8 @@ class BlockOneRT:
         # 1) RT ~ Gamma(GLM log-link)
         lp_rt = jnp.einsum('...i,i->...', x_rt, params["weights_rt"])
         
-        # ─── clamp to a “safe” window [−20, +20] ─────────────────────────────────
-        lp_rt_clamped = jnp.clip(lp_rt, a_min=-20.0, a_max=20.0)
+        # ─── clamp to a “safe” window [−30, +30] ─────────────────────────────────
+        lp_rt_clamped = jnp.clip(lp_rt, a_min=-30.0, a_max=30.0)
         mu_rt         = jnp.exp(lp_rt_clamped)
         # ─── ensure the Gamma rate never becomes exactly 0 ─────────────────────────
         
