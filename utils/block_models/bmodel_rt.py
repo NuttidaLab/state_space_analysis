@@ -20,8 +20,8 @@ tfb = tfp.bijectors
 
 # New emission parameterization reflecting final GLM/VM formulas
 class ParamsBlockHMMrtEmissions(NamedTuple):
-    # RT GLM: 1 + Error * (Attention + Coh + Exp) => intercept + 1 Error + 3 flags + 3 interactions = 8
-    w1:    Union[Float[Array, "num_states 8"], ParameterProperties] # weights
+    # RT features: [1, Error, Prev_RT, Att, Coh, Exp]
+    w1:    Union[Float[Array, "num_states 6"], ParameterProperties] # weights
     w2:      Union[Float[Array, "num_states 1"],   ParameterProperties] # alpha
 
 class ParamsBlockHMMrt(NamedTuple):
@@ -32,8 +32,8 @@ class ParamsBlockHMMrt(NamedTuple):
 class BlockHMMrtEmissions(HMMEmissions):
     def __init__(self,
                  num_states: int,
-                 input_dim: int = 8,       # 8(rt) + 7(ra) + 8(error)
-                 emission_dim: int = 3,
+                 input_dim: int = 6,       # RT features: [1, Error, Prev_RT, Att, Coh, Exp]
+                 emission_dim: int = 1,
                  m_step_optimizer=optax.adam(1e-3),
                  m_step_num_iters=50):
         super().__init__(m_step_optimizer=m_step_optimizer, m_step_num_iters=m_step_num_iters)
@@ -53,7 +53,7 @@ class BlockHMMrtEmissions(HMMEmissions):
 
         if method == "prior":
             # RT
-            w1 = jnp.zeros((self.num_states, 8))
+            w1 = jnp.zeros((self.num_states, 6))
             w2   = jnp.ones((self.num_states, 1))
         
         params = ParamsBlockHMMrtEmissions(
@@ -96,8 +96,8 @@ class BlockHMMrt(HMM):
     def __init__(
         self,
         num_states: int,
-        input_dim: int = 8,  # 8(rt) + 7(ra) + 8(error)
-        emission_dim: int = 3,
+        input_dim: int = 6,  # RT features: [1, Error, Prev_RT, Att, Coh, Exp]
+        emission_dim: int = 1,
         initial_probs_concentration: Union[Scalar, Float[Array, "num_states"]] = 1.1,
         transition_matrix_concentration: Union[Scalar, Float[Array, "num_states"]] = 1.1,
         transition_matrix_stickiness: Scalar = 0.0
@@ -127,7 +127,7 @@ class BlockHMMrt(HMM):
         initial_probs: Optional[Float[Array, "num_states"]] = None,
         transition_matrix: Optional[Float[Array, "num_states num_states"]] = None,
         # Emission init args:
-        w1: Optional[Float[Array, "num_states 8"]] = None,
+        w1: Optional[Float[Array, "num_states 6"]] = None,
         w2:   Optional[Float[Array, "num_states 1"]]   = None,
         
         emissions:  Optional[Float[Array, "num_timesteps emission_dim"]]=None

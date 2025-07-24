@@ -20,8 +20,8 @@ tfb = tfp.bijectors
 
 # New emission parameterization reflecting final GLM/VM formulas
 class ParamsBlockHMMreEremissions(NamedTuple):
-    # RE features: [1, Att, Coh, Exp]
-    w1: Union[Float[Array, "num_states 4"], ParameterProperties] # weights
+    # RE features: [1, RT, Prev_Error, Att, Coh, Exp]
+    w1: Union[Float[Array, "num_states 6"], ParameterProperties] # weights
     w2: Union[Float[Array, "num_states 1"],   ParameterProperties] # alpha
 
 class ParamsBlockHMMre(NamedTuple):
@@ -32,7 +32,7 @@ class ParamsBlockHMMre(NamedTuple):
 class BlockHMMreEremissions(HMMEmissions):
     def __init__(self,
                  num_states: int,
-                 input_dim: int = 4,       # RE features: [1, Att, Coh, Exp]
+                 input_dim: int = 6,       # RE features: [1, RT, Prev_Error, Att, Coh, Exp]
                  emission_dim: int = 1,
                  m_step_optimizer=optax.adam(1e-3),
                  m_step_num_iters=50):
@@ -53,7 +53,7 @@ class BlockHMMreEremissions(HMMEmissions):
 
         if method == "prior":
             # Error
-            w1 = jnp.zeros((self.num_states, 4))
+            w1 = jnp.zeros((self.num_states, 6))
             w2 = jnp.ones((self.num_states, 1))
 
         params = ParamsBlockHMMreEremissions(
@@ -81,7 +81,7 @@ class BlockHMMre(HMM):
     def __init__(
         self,
         num_states: int,
-        input_dim: int = 4,
+        input_dim: int = 6,
         emission_dim: int = 1,
         initial_probs_concentration: Union[Scalar, Float[Array, "num_states"]] = 1.1,
         transition_matrix_concentration: Union[Scalar, Float[Array, "num_states"]] = 1.1,
@@ -112,7 +112,7 @@ class BlockHMMre(HMM):
         initial_probs: Optional[Float[Array, "num_states"]] = None,
         transition_matrix: Optional[Float[Array, "num_states num_states"]] = None,
         # Emission init args:
-        w1: Optional[Float[Array, "num_states 4"]] = None,
+        w1: Optional[Float[Array, "num_states 6"]] = None,
         w2:    Optional[Float[Array, "num_states 1"]]   = None,
         emissions:  Optional[Float[Array, "num_timesteps emission_dim"]]=None
     ) -> Tuple[HMMParameterSet, HMMPropertySet]:

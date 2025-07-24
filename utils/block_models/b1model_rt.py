@@ -11,8 +11,8 @@ tfb = tfp.bijectors
 
 class BlockOneRT:
     def __init__(self):
-        # total input dim = 8 (rt) + 7 (ra) + 8 (re) = 23
-        self.input_dim = 8
+        # RT features: [1, Error, Prev_RT, Att, Coh, Exp]
+        self.input_dim = 6
         self.params = None
 
     def initialize(self, key: jr.PRNGKey, method="prior", w_scale: float = 1e-3) -> Tuple[dict, dict]:
@@ -22,7 +22,7 @@ class BlockOneRT:
         ks = jr.split(key, 2)
         params = {
             # RT GLM
-            "weights_rt":       jr.normal(ks[0], (8,)) * w_scale,
+            "weights_rt":       jr.normal(ks[0], (6,)) * w_scale,
             "alpha_rt":         tfb.Softplus()(jr.normal(ks[1], ()) * 0.1 + 0.5) + 1.0,
         }
         # no properties needed here (empty dict matches your existing signature)
@@ -30,8 +30,8 @@ class BlockOneRT:
 
     def distribution(self, params: dict, inputs: jnp.ndarray):
         """
-        inputs: [..., 23] array
-        returns a JointDistributionSequential([dist_rt, dist_ra, dist_re])
+        inputs: [..., 6] array for RT features: [1, Error, Prev_RT, Att, Coh, Exp]
+        returns a Gamma distribution for reaction time
         """
         if inputs.ndim == 2:
             inputs = inputs[jnp.newaxis, ...]

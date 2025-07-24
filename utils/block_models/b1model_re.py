@@ -11,8 +11,8 @@ tfb = tfp.bijectors
 
 class BlockOneRE:
     def __init__(self):
-        # RE features: [1, Att, Coh, Exp]
-        self.input_dim = 4
+        # RE features: [1, RT, Prev_Error, Att, Coh, Exp]
+        self.input_dim = 6
         self.params = None
 
     def initialize(self, key: jr.PRNGKey, method="prior", w_scale: float = 1e-3) -> Tuple[dict, dict]:
@@ -22,7 +22,7 @@ class BlockOneRE:
         ks = jr.split(key, 2)
         params = {
             # Error GLM
-            "weights_re": jr.normal(ks[0], (4,)) * w_scale,
+            "weights_re": jr.normal(ks[0], (6,)) * w_scale,
             "covs_re": jr.normal(ks[1], ()) * 0.1 + 1.0,
         }
         # no properties needed here (empty dict matches your existing signature)
@@ -52,7 +52,7 @@ class BlockOneRE:
 
     def fit_em(self, params, props, emissions, inputs, num_iters=100, lr=1e-3, verbose=True):
         """
-        A simple Adam‐based MLE fit (no EM here, since single-state)
+        A simple Adam-based MLE fit (no EM here, since single-state)
         """
         optimizer = optax.adam(lr)
         opt_state = optimizer.init(params)
